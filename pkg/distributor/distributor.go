@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gogo/status"
 	"github.com/grafana/loki/pkg/ingester"
+	"google.golang.org/grpc/codes"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -324,8 +326,8 @@ type pushTracker struct {
 // The returned error is the last one seen.
 func (d *Distributor) Push(ctx context.Context, req *logproto.PushRequest) (*logproto.PushResponse, error) {
 	if s := d.State(); s != services.Running {
-		// return nil, status.Error(codes.Unavailable, "distributor not ready")
-		return nil, fmt.Errorf("[qwe] distributor not ready")
+		return nil, status.Error(codes.Unavailable, "[qwe] distributor not ready")
+		// return nil, fmt.Errorf("[qwe] distributor not ready")
 	}
 
 	if err := d.CheckReady(); err != nil {
