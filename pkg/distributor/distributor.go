@@ -17,9 +17,6 @@ import (
 	"github.com/go-kit/log/level"
 	"github.com/prometheus/prometheus/model/labels"
 
-	"github.com/gogo/status"
-	"google.golang.org/grpc/codes"
-
 	"github.com/grafana/dskit/backoff"
 	"github.com/grafana/dskit/kv"
 	"github.com/grafana/dskit/limiter"
@@ -327,7 +324,8 @@ type pushTracker struct {
 // The returned error is the last one seen.
 func (d *Distributor) Push(ctx context.Context, req *logproto.PushRequest) (*logproto.PushResponse, error) {
 	if s := d.State(); s != services.Running {
-		return nil, status.Error(codes.Unavailable, "distributor not ready")
+		// return nil, status.Error(codes.Unavailable, "distributor not ready")
+		return nil, fmt.Errorf("[qwe] distributor not ready")
 	}
 
 	if err := d.CheckReady(); err != nil {
