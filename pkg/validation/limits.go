@@ -142,6 +142,8 @@ type Limits struct {
 
 	RulerRemoteWriteConfig map[string]config.RemoteWriteConfig `yaml:"ruler_remote_write_config,omitempty" json:"ruler_remote_write_config,omitempty" doc:"description=Configures global and per-tenant limits for remote write clients. A map with remote client id as key."`
 
+	IndexGatewayMaxShards int `yaml:"index_gateway_max_shards,omitempty" json:"index_gateway_max_shards" doc:""`
+
 	// Global and per tenant deletion mode
 	DeletionMode string `yaml:"deletion_mode" json:"deletion_mode"`
 
@@ -622,6 +624,11 @@ func (o *Overrides) RulerRemoteWriteConfig(userID string, id string) *config.Rem
 	}
 
 	return nil
+}
+
+// IndexGatewayMaxShards returns the sharding factor for a tenant for the index gateway client
+func (o *Overrides) IndexGatewayMaxShards(userID string) int {
+	return o.getOverridesForUser(userID).IndexGatewayMaxShards
 }
 
 // RetentionPeriod returns the retention period for a given user.

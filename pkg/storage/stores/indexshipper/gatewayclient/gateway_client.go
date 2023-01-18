@@ -4,8 +4,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"math/rand"
+	"strconv"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -33,6 +35,24 @@ const (
 	maxQueriesPerGrpc      = 100
 	maxConcurrentGrpcCalls = 10
 )
+
+type hashFunc func(string) uint32
+
+func shardByTenantID(id string) uint32 {
+	return tokenFor(id)
+}
+
+func tokenFor(parts ...string) uint32 {
+	delimiter := []byte(":")
+	h := fnv.New32()
+	for i, s := range parts {
+		_, _ = h.Write([]byte(s))
+		if i < len(parts)-1 {
+			_, _ = h.Write(delimiter)
+		}
+	}
+	return h.Sum32()
+}
 
 // IndexGatewayClientConfig configures the Index Gateway client used to
 // communicate with the Index Gateway server.
@@ -184,10 +204,16 @@ func (s *GatewayClient) GetChunkRef(ctx context.Context, in *logproto.GetChunkRe
 			resp *logproto.GetChunkRefResponse
 			err  error
 		)
-		err = s.ringModeDo(ctx, func(client logproto.IndexGatewayClient) error {
-			resp, err = client.GetChunkRef(ctx, in, opts...)
-			return err
-		})
+		err = s.ringModeDo(ctx,
+			func(userID string) uint32 {
+				matcherModulo := tokenFor(in.Matchers) % 6
+				return tokenFor(userID, fmt.Sprintf("shard-%i", matcherModulo))
+			},
+			func(client logproto.IndexGatewayClient) error {
+				resp, err = client.GetChunkRef(ctx, in, opts...)
+				return err
+			},
+		)
 		return resp, err
 	}
 	return s.grpcClient.GetChunkRef(ctx, in, opts...)
@@ -199,10 +225,15 @@ func (s *GatewayClient) GetSeries(ctx context.Context, in *logproto.GetSeriesReq
 			resp *logproto.GetSeriesResponse
 			err  error
 		)
-		err = s.ringModeDo(ctx, func(client logproto.IndexGatewayClient) error {
-			resp, err = client.GetSeries(ctx, in, opts...)
-			return err
-		})
+		err = s.ringModeDo(ctx,
+			func(userID string) uint32 {
+				return util.TokenFor(userID, "" /* labels */)
+			},
+			func(client logproto.IndexGatewayClient) error {
+				resp, err = client.GetSeries(ctx, in, opts...)
+				return err
+			},
+		)
 		return resp, err
 	}
 	return s.grpcClient.GetSeries(ctx, in, opts...)
@@ -214,10 +245,13 @@ func (s *GatewayClient) LabelNamesForMetricName(ctx context.Context, in *logprot
 			resp *logproto.LabelResponse
 			err  error
 		)
-		err = s.ringModeDo(ctx, func(client logproto.IndexGatewayClient) error {
-			resp, err = client.LabelNamesForMetricName(ctx, in, opts...)
-			return err
-		})
+		err = s.ringModeDo(ctx,
+			shardByTenantID,
+			func(client logproto.IndexGatewayClient) error {
+				resp, err = client.LabelNamesForMetricName(ctx, in, opts...)
+				return err
+			},
+		)
 		return resp, err
 	}
 	return s.grpcClient.LabelNamesForMetricName(ctx, in, opts...)
@@ -229,10 +263,13 @@ func (s *GatewayClient) LabelValuesForMetricName(ctx context.Context, in *logpro
 			resp *logproto.LabelResponse
 			err  error
 		)
-		err = s.ringModeDo(ctx, func(client logproto.IndexGatewayClient) error {
-			resp, err = client.LabelValuesForMetricName(ctx, in, opts...)
-			return err
-		})
+		err = s.ringModeDo(ctx,
+			shardByTenantID,
+			func(client logproto.IndexGatewayClient) error {
+				resp, err = client.LabelValuesForMetricName(ctx, in, opts...)
+				return err
+			},
+		)
 		return resp, err
 	}
 	return s.grpcClient.LabelValuesForMetricName(ctx, in, opts...)
@@ -244,10 +281,13 @@ func (s *GatewayClient) GetStats(ctx context.Context, in *logproto.IndexStatsReq
 			resp *logproto.IndexStatsResponse
 			err  error
 		)
-		err = s.ringModeDo(ctx, func(client logproto.IndexGatewayClient) error {
-			resp, err = client.GetStats(ctx, in, opts...)
-			return err
-		})
+		err = s.ringModeDo(ctx,
+			shardByTenantID,
+			func(client logproto.IndexGatewayClient) error {
+				resp, err = client.GetStats(ctx, in, opts...)
+				return err
+			},
+		)
 		return resp, err
 	}
 	return s.grpcClient.GetStats(ctx, in, opts...)
@@ -269,9 +309,12 @@ func (s *GatewayClient) doQueries(ctx context.Context, queries []index.Query, ca
 	}
 
 	if s.cfg.Mode == indexgateway.RingMode {
-		return s.ringModeDo(ctx, func(client logproto.IndexGatewayClient) error {
-			return s.clientDoQueries(ctx, gatewayQueries, queryKeyQueryMap, callback, client)
-		})
+		return s.ringModeDo(ctx,
+			shardByTenantID,
+			func(client logproto.IndexGatewayClient) error {
+				return s.clientDoQueries(ctx, gatewayQueries, queryKeyQueryMap, callback, client)
+			},
+		)
 	}
 
 	return s.clientDoQueries(ctx, gatewayQueries, queryKeyQueryMap, callback, s.grpcClient)
@@ -311,7 +354,7 @@ func (s *GatewayClient) clientDoQueries(ctx context.Context, gatewayQueries []*l
 
 // ringModeDo executes the given function for each Index Gateway instance in the ring mapping to the correct tenant in the index.
 // In case of callback failure, we'll try another member of the ring for that tenant ID.
-func (s *GatewayClient) ringModeDo(ctx context.Context, callback func(client logproto.IndexGatewayClient) error) error {
+func (s *GatewayClient) ringModeDo(ctx context.Context, hashFn hashFunc, callback func(client logproto.IndexGatewayClient) error) error {
 	userID, err := tenant.TenantID(ctx)
 	if err != nil {
 		return errors.Wrap(err, "index gateway client get tenant ID")
@@ -319,7 +362,7 @@ func (s *GatewayClient) ringModeDo(ctx context.Context, callback func(client log
 
 	bufDescs, bufHosts, bufZones := ring.MakeBuffersForGet()
 
-	key := util.TokenFor(userID, "" /* labels */)
+	key := hashFn(userID)
 	rs, err := s.ring.Get(key, ring.WriteNoExtend, bufDescs, bufHosts, bufZones)
 	if err != nil {
 		return errors.Wrap(err, "index gateway get ring")
