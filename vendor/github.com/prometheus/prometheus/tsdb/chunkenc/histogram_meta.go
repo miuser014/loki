@@ -165,21 +165,23 @@ func (b *bucketIterator) Next() (int, bool) {
 	if b.span >= len(b.spans) {
 		return 0, false
 	}
-try:
-	if b.bucket < int(b.spans[b.span].Length-1) { // Try to move within same span.
+	if b.bucket < int(b.spans[b.span].Length)-1 { // Try to move within same span.
 		b.bucket++
 		b.idx++
 		return b.idx, true
-	} else if b.span < len(b.spans)-1 { // Try to move from one span to the next.
+	}
+
+	for b.span < len(b.spans)-1 { // Try to move from one span to the next.
 		b.span++
 		b.idx += int(b.spans[b.span].Offset + 1)
 		b.bucket = 0
 		if b.spans[b.span].Length == 0 {
-			// Pathological case that should never happen. We can't use this span, let's try again.
-			goto try
+			b.idx--
+			continue
 		}
 		return b.idx, true
 	}
+
 	// We're out of options.
 	return 0, false
 }
@@ -191,7 +193,7 @@ type Interjection struct {
 	num int
 }
 
-// compareSpans returns the interjections to convert a slice of deltas to a new
+// forwardCompareSpans returns the interjections to convert a slice of deltas to a new
 // slice representing an expanded set of buckets, or false if incompatible
 // (e.g. if buckets were removed).
 //
@@ -226,11 +228,11 @@ type Interjection struct {
 // match a new span layout that adds buckets, we simply need to generate a list
 // of interjections.
 //
-// Note: Within compareSpans we don't have to worry about the changes to the
+// Note: Within forwardCompareSpans we don't have to worry about the changes to the
 // spans themselves, thanks to the iterators we get to work with the more useful
 // bucket indices (which of course directly correspond to the buckets we have to
 // adjust).
-func compareSpans(a, b []histogram.Span) ([]Interjection, bool) {
+func forwardCompareSpans(a, b []histogram.Span) (forward []Interjection, ok bool) {
 	ai := newBucketIterator(a)
 	bi := newBucketIterator(b)
 
@@ -278,21 +280,125 @@ loop:
 	return interjections, true
 }
 
+// bidirectionalCompareSpans does everything that forwardCompareSpans does and
+// also returns interjections in the other direction (i.e. buckets missing in b that are missing in a).
+func bidirectionalCompareSpans(a, b []histogram.Span) (forward, backward []Interjection, mergedSpans []histogram.Span) {
+	ai := newBucketIterator(a)
+	bi := newBucketIterator(b)
+
+	var interjections, bInterjections []Interjection
+	var lastBucket int
+	addBucket := func(b int) {
+		offset := b - lastBucket - 1
+		if offset == 0 && len(mergedSpans) > 0 {
+			mergedSpans[len(mergedSpans)-1].Length++
+		} else {
+			if len(mergedSpans) == 0 {
+				offset++
+			}
+			mergedSpans = append(mergedSpans, histogram.Span{
+				Offset: int32(offset),
+				Length: 1,
+			})
+		}
+
+		lastBucket = b
+	}
+
+	// When inter.num becomes > 0, this becomes a valid interjection that
+	// should be yielded when we finish a streak of new buckets.
+	var inter, bInter Interjection
+
+	av, aOK := ai.Next()
+	bv, bOK := bi.Next()
+loop:
+	for {
+		switch {
+		case aOK && bOK:
+			switch {
+			case av == bv: // Both have an identical value. move on!
+				// Finish WIP interjection and reset.
+				if inter.num > 0 {
+					interjections = append(interjections, inter)
+					inter.num = 0
+				}
+				if bInter.num > 0 {
+					bInterjections = append(bInterjections, bInter)
+					bInter.num = 0
+				}
+				addBucket(av)
+				av, aOK = ai.Next()
+				bv, bOK = bi.Next()
+				inter.pos++
+				bInter.pos++
+			case av < bv: // b misses a value that is in a.
+				bInter.num++
+				// Collect the forward interjection before advancing the
+				// position of 'a'.
+				if inter.num > 0 {
+					interjections = append(interjections, inter)
+					inter.num = 0
+				}
+				addBucket(av)
+				inter.pos++
+				av, aOK = ai.Next()
+			case av > bv: // a misses a value that is in b. Forward b and recompare.
+				inter.num++
+				// Collect the backward interjection before advancing the
+				// position of 'b'.
+				if bInter.num > 0 {
+					bInterjections = append(bInterjections, bInter)
+					bInter.num = 0
+				}
+				addBucket(bv)
+				bInter.pos++
+				bv, bOK = bi.Next()
+			}
+		case aOK && !bOK: // b misses a value that is in a.
+			bInter.num++
+			addBucket(av)
+			av, aOK = ai.Next()
+		case !aOK && bOK: // a misses a value that is in b. Forward b and recompare.
+			inter.num++
+			addBucket(bv)
+			bv, bOK = bi.Next()
+		default: // Both iterators ran out. We're done.
+			if inter.num > 0 {
+				interjections = append(interjections, inter)
+			}
+			if bInter.num > 0 {
+				bInterjections = append(bInterjections, bInter)
+			}
+			break loop
+		}
+	}
+
+	return interjections, bInterjections, mergedSpans
+}
+
+type bucketValue interface {
+	int64 | float64
+}
+
 // interject merges 'in' with the provided interjections and writes them into
 // 'out', which must already have the appropriate length.
-func interject(in, out []int64, interjections []Interjection) []int64 {
+func interject[BV bucketValue](in, out []BV, interjections []Interjection, deltas bool) []BV {
 	var (
-		j      int   // Position in out.
-		v      int64 // The last value seen.
-		interj int   // The next interjection to process.
+		j      int // Position in out.
+		v      BV  // The last value seen.
+		interj int // The next interjection to process.
 	)
 	for i, d := range in {
 		if interj < len(interjections) && i == interjections[interj].pos {
 
 			// We have an interjection!
-			// Add interjection.num new delta values such that their
-			// bucket values equate 0.
-			out[j] = int64(-v)
+			// Add interjection.num new delta values such that their bucket values equate 0.
+			// When deltas==false, it means that it is an absolute value. So we set it to 0 directly.
+			if deltas {
+				out[j] = -v
+			} else {
+				out[j] = 0
+			}
 			j++
 			for x := 1; x < interjections[interj].num; x++ {
 				out[j] = 0
@@ -304,7 +410,13 @@ func interject(in, out []int64, interjections []Interjection) []int64 {
 			// should save is the original delta value + the last
 			// value of the point before the interjection (to undo
 			// the delta that was introduced by the interjection).
-			out[j] = d + v
+			// When deltas==false, it means that it is an absolute value,
+			// so we set it directly to the value in the 'in' slice.
+			if deltas {
+				out[j] = d + v
+			} else {
+				out[j] = d
+			}
 			j++
 			v = d + v
 			continue
@@ -321,7 +433,11 @@ func interject(in, out []int64, interjections []Interjection) []int64 {
 		// All interjections processed. Nothing more to do.
 	case len(interjections) - 1:
 		// One more interjection to process at the end.
-		out[j] = int64(-v)
+		if deltas {
+			out[j] = -v
+		} else {
+			out[j] = 0
+		}
 		j++
 		for x := 1; x < interjections[interj].num; x++ {
 			out[j] = 0
