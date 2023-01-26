@@ -81,7 +81,7 @@ type RefEntries struct {
 	Entries []logproto.Entry
 }
 
-func (r *WALRecord) EncodeSeries(b []byte) []byte {
+func (r *WALRecord) encodeSeries(b []byte) []byte {
 	buf := encoding.EncWith(b)
 	buf.PutByte(byte(WALRecordSeries))
 	buf.PutUvarintStr(r.UserID)
@@ -95,7 +95,7 @@ func (r *WALRecord) EncodeSeries(b []byte) []byte {
 	return encoded
 }
 
-func (r *WALRecord) EncodeEntries(version RecordType, b []byte) []byte {
+func (r *WALRecord) encodeEntries(version RecordType, b []byte) []byte {
 	buf := encoding.EncWith(b)
 	buf.PutByte(byte(version))
 	buf.PutUvarintStr(r.UserID)
@@ -136,7 +136,7 @@ outer:
 	return buf.Get()
 }
 
-func DecodeEntries(b []byte, version RecordType, rec *WALRecord) error {
+func decodeEntries(b []byte, version RecordType, rec *WALRecord) error {
 	if len(b) == 0 {
 		return nil
 	}
@@ -184,8 +184,7 @@ func DecodeEntries(b []byte, version RecordType, rec *WALRecord) error {
 	return nil
 }
 
-// DecodeWALRecord decodes the byte stream representation of a wal record into the WALRecord struct.
-func DecodeWALRecord(b []byte, walRec *WALRecord) (err error) {
+func decodeWALRecord(b []byte, walRec *WALRecord) (err error) {
 	var (
 		userID  string
 		dec     record.Decoder
@@ -201,7 +200,7 @@ func DecodeWALRecord(b []byte, walRec *WALRecord) (err error) {
 		rSeries, err = dec.Series(decbuf.B, walRec.Series)
 	case WALRecordEntriesV1, WALRecordEntriesV2:
 		userID = decbuf.UvarintStr()
-		err = DecodeEntries(decbuf.B, t, walRec)
+		err = decodeEntries(decbuf.B, t, walRec)
 	default:
 		return errors.New("unknown record type")
 	}

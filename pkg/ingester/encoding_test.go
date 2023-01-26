@@ -35,11 +35,11 @@ func Test_Encoding_Series(t *testing.T) {
 		},
 	}
 
-	buf := record.EncodeSeries(nil)
+	buf := record.encodeSeries(nil)
 
 	decoded := recordPool.GetRecord()
 
-	err := DecodeWALRecord(buf, decoded)
+	err := decodeWALRecord(buf, decoded)
 	require.Nil(t, err)
 
 	// Since we use a pool, there can be subtle differentiations between nil slices and len(0) slices.
@@ -131,8 +131,8 @@ func Test_Encoding_Entries(t *testing.T) {
 		},
 	} {
 		decoded := recordPool.GetRecord()
-		buf := tc.rec.EncodeEntries(tc.version, nil)
-		err := DecodeWALRecord(buf, decoded)
+		buf := tc.rec.encodeEntries(tc.version, nil)
+		err := decodeWALRecord(buf, decoded)
 		require.Nil(t, err)
 		require.Equal(t, tc.rec, decoded)
 
@@ -167,7 +167,7 @@ func Benchmark_EncodeEntries(b *testing.B) {
 	defer recordPool.PutBytes(buf)
 
 	for n := 0; n < b.N; n++ {
-		record.EncodeEntries(CurrentEntriesRec, buf)
+		record.encodeEntries(CurrentEntriesRec, buf)
 	}
 }
 
@@ -194,13 +194,13 @@ func Benchmark_DecodeWAL(b *testing.B) {
 		},
 	}
 
-	buf := record.EncodeEntries(CurrentEntriesRec, nil)
+	buf := record.encodeEntries(CurrentEntriesRec, nil)
 	rec := recordPool.GetRecord()
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	for n := 0; n < b.N; n++ {
-		require.NoError(b, DecodeWALRecord(buf, rec))
+		require.NoError(b, decodeWALRecord(buf, rec))
 	}
 }
 
