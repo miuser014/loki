@@ -11,6 +11,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+type Stoppable interface {
+	Stop()
+}
+
 // Manager manages remote write client instantiation, and connects the related components to orchestrate the flow of api.Entry
 // from the scrape targets, to the remote write clients themselves.
 //
@@ -19,6 +23,7 @@ import (
 // types: Logger, Multi and WAL.
 type Manager struct {
 	clientChannelHandler api.EntryHandler
+	walWatchers          []Stoppable
 	clients              []Client
 
 	entries chan api.Entry
@@ -34,7 +39,10 @@ func NewManager(metrics *Metrics, logger log.Logger, maxStreams, maxLineSize int
 	if err != nil {
 		return nil, err
 	}
+
 	walWriter := wal.NewWriter(pWAL, logger)
+
+	watcherMetrics := wal.NewWatcherMetrics(reg)
 
 	var fake struct{}
 
@@ -42,7 +50,13 @@ func NewManager(metrics *Metrics, logger log.Logger, maxStreams, maxLineSize int
 		return nil, fmt.Errorf("at least one client config should be provided")
 	}
 	clientsCheck := make(map[string]struct{})
+
 	clients := make([]Client, 0, len(clientCfgs))
+	watchers := make([]Stoppable, 0, len(clientCfgs))
+	// Instead of each write to that connects a watcher to a client keeping it's own mapping of decoded series, using
+	// a shared one
+	seriesCache := newSeriesCache()
+
 	for _, cfg := range clientCfgs {
 		client, err := New(metrics, cfg, maxStreams, maxLineSize, maxLineSizeTruncate, logger)
 		if err != nil {
@@ -56,11 +70,17 @@ func NewManager(metrics *Metrics, logger log.Logger, maxStreams, maxLineSize int
 
 		clientsCheck[client.Name()] = fake
 		clients = append(clients, client)
+
+		// Create and launch wal watcher for this client
+		watcher := wal.NewWatcher(walCfg.Dir, client.Name(), watcherMetrics, newClientWriteTo(client.Chan(), seriesCache, logger), logger)
+		watcher.Start()
+		watchers = append(watchers, watcher)
 	}
 
 	manager := &Manager{
 		clientChannelHandler: walWriter,
 		clients:              clients,
+		walWatchers:          watchers,
 		entries:              make(chan api.Entry),
 	}
 	manager.start()
@@ -76,10 +96,10 @@ func (m *Manager) start() {
 			// first write to WAL
 			m.clientChannelHandler.Chan() <- e
 
-			// then fanout to every remote write client
-			for _, c := range m.clients {
-				c.Chan() <- e
-			}
+			// then fan-out to every remote write client
+			//for _, c := range m.clients {
+			//	c.Chan() <- e
+			//}
 		}
 	}()
 }
@@ -110,8 +130,12 @@ func (m *Manager) Stop() {
 	// first stop the receiving channel
 	m.once.Do(func() { close(m.entries) })
 	m.wg.Wait()
-	// wait for WAL to finish writing entries
+	// wait for wal to finish writing entries
 	m.clientChannelHandler.Stop()
+	// close wal watchers
+	for _, walWatcher := range m.walWatchers {
+		walWatcher.Stop()
+	}
 	// close clients
 	for _, c := range m.clients {
 		c.Stop()

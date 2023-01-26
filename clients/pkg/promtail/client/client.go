@@ -154,8 +154,11 @@ func mustRegisterOrGet(reg prometheus.Registerer, c prometheus.Collector) promet
 // Client pushes entries to Loki and can be stopped
 type Client interface {
 	api.EntryHandler
-	// Stop goroutine sending batch of entries without retries.
+
+	// StopNow stops the routine sending batch of entries without retries.
 	StopNow()
+
+	// Name returns the name of the client.
 	Name() string
 }
 
