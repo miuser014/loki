@@ -259,13 +259,7 @@ func (d *Distributor) starting(ctx context.Context) error {
 				continue
 			}
 
-			if len(d.ingestersRing.GetTokens(ctx)) < 1 {
-				level.Info(util_log.Logger).Log("msg", "[qwe] get tokens < 1")
-				ingesterRingBackoff.Wait()
-				continue
-			}
-
-			level.Info(util_log.Logger).Log("msg", "[qwe] instances count >= 1 and get tokens >= 1", "instances_count", d.ingestersRing.InstancesCount(), "tokens_count", len(d.ingestersRing.GetTokens(ctx)))
+			level.Info(util_log.Logger).Log("msg", "[qwe] instances count >= 1", "instances_count", d.ingestersRing.InstancesCount())
 
 			return nil
 		}
@@ -292,10 +286,6 @@ func (d *Distributor) CheckReady() error {
 
 	if d.ingestersRing.InstancesCount() < 1 {
 		return fmt.Errorf("number of ingesters available is lesser than 1")
-	}
-
-	if len(d.ingestersRing.GetTokens(context.Background())) < 1 {
-		return fmt.Errorf("number of tokens available is lesser than 1")
 	}
 
 	return nil

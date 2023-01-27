@@ -77,9 +77,6 @@ type ReadRing interface {
 
 	// CleanupShuffleShardCache should delete cached shuffle-shard subrings for given identifier.
 	CleanupShuffleShardCache(identifier string)
-
-	// GetTokens returns ring instance tokens.
-	GetTokens(ctx context.Context) Tokens
 }
 
 var (
