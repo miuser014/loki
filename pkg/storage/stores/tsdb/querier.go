@@ -14,7 +14,6 @@
 package tsdb
 
 import (
-	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -98,7 +97,14 @@ func PostingsForMatchers(ix IndexReader, shard *index.ShardAnnotation, ms ...*la
 	}
 
 	for _, m := range ms {
-		if labelMustBeSet[m.Name] {
+		if m.Name == "" && m.Value == "" { // Special-case for AllPostings, used in tests at least.
+			k, v := index.AllPostingsKey()
+			allPostings, err := ix.Postings(k, shard, v)
+			if err != nil {
+				return nil, err
+			}
+			its = append(its, allPostings)
+		} else if labelMustBeSet[m.Name] {
 			// If this matcher must be non-empty, we can be smarter.
 			matchesEmpty := m.Matches("")
 			isNot := m.Type == labels.MatchNotEqual || m.Type == labels.MatchNotRegexp
@@ -180,7 +186,6 @@ func postingsForMatcher(ix IndexReader, shard *index.ShardAnnotation, m *labels.
 	if m.Type == labels.MatchRegexp {
 		setMatches := findSetMatches(m.GetRegexString())
 		if len(setMatches) > 0 {
-			sort.Strings(setMatches)
 			return ix.Postings(m.Name, shard, setMatches...)
 		}
 	}
@@ -191,14 +196,9 @@ func postingsForMatcher(ix IndexReader, shard *index.ShardAnnotation, m *labels.
 	}
 
 	var res []string
-	lastVal, isSorted := "", true
 	for _, val := range vals {
 		if m.Matches(val) {
 			res = append(res, val)
-			if isSorted && val < lastVal {
-				isSorted = false
-			}
-			lastVal = val
 		}
 	}
 
@@ -206,9 +206,6 @@ func postingsForMatcher(ix IndexReader, shard *index.ShardAnnotation, m *labels.
 		return index.EmptyPostings(), nil
 	}
 
-	if !isSorted {
-		sort.Strings(res)
-	}
 	return ix.Postings(m.Name, shard, res...)
 }
 
@@ -220,20 +217,17 @@ func inversePostingsForMatcher(ix IndexReader, shard *index.ShardAnnotation, m *
 	}
 
 	var res []string
-	lastVal, isSorted := "", true
-	for _, val := range vals {
-		if !m.Matches(val) {
-			res = append(res, val)
-			if isSorted && val < lastVal {
-				isSorted = false
+	// If the inverse match is ="", we just want all the values.
+	if m.Type == labels.MatchEqual && m.Value == "" {
+		res = vals
+	} else {
+		for _, val := range vals {
+			if !m.Matches(val) {
+				res = append(res, val)
 			}
-			lastVal = val
 		}
 	}
 
-	if !isSorted {
-		sort.Strings(res)
-	}
 	return ix.Postings(m.Name, shard, res...)
 }
 
