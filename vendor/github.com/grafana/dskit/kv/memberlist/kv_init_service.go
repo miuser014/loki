@@ -50,6 +50,7 @@ func (kvs *KVInitService) GetMemberlistKV() (*KV, error) {
 		kv := NewKV(*kvs.cfg, kvs.logger, kvs.dnsProvider, kvs.registerer)
 		kvs.watcher.WatchService(kv)
 		kvs.err = kv.StartAsync(context.Background())
+
 		kvs.kv.Store(kv)
 	})
 
